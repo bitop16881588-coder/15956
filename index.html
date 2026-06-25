@@ -179,10 +179,62 @@ body{
 <div class="wrap">
   <div class="topbar">
     <div class="brand"><h1>萬事寶典</h1><div class="sub">資料在手，江湖我有</div></div>
+    <button id="lockoutBtn" title="Log out">Log out</button>
   </div>
   <div id="app"></div>
 </div>
 <div id="modalRoot"></div>
+
+<div id="lockScreen">
+  <div class="lockBox">
+    <div class="lockTitle">萬事寶典</div>
+    <div class="lockSub">請輸入密碼</div>
+    <input id="lockPw" type="password" autocomplete="off" inputmode="text" placeholder="密碼">
+    <div id="lockMsg"></div>
+    <button id="lockBtn">進　入</button>
+  </div>
+</div>
+<style>
+#lockScreen{position:fixed;inset:0;z-index:99999;background:#1d1a17;display:flex;align-items:center;justify-content:center}
+#lockScreen .lockBox{width:min(360px,86vw);background:#2a2622;border:1px solid #4a423a;border-radius:16px;padding:32px 26px;box-shadow:0 16px 50px rgba(0,0,0,.5);text-align:center;color:#e8e0d5}
+#lockScreen .lockTitle{font-size:26px;letter-spacing:3px;margin-bottom:6px}
+#lockScreen .lockSub{font-size:13px;color:#b3a596;margin-bottom:22px}
+#lockScreen input{width:100%;box-sizing:border-box;padding:12px 14px;border-radius:10px;border:1px solid #5a5048;background:#211d1a;color:#f0e8dd;font-size:16px;text-align:center;letter-spacing:1px;outline:none}
+#lockScreen input:focus{border-color:#BE7E5C}
+#lockScreen #lockMsg{height:18px;font-size:12px;color:#d98b8b;margin:9px 0 4px}
+#lockScreen button{width:100%;padding:12px;border:none;border-radius:10px;background:#BE7E5C;color:#fff;font-size:15px;cursor:pointer;letter-spacing:3px}
+#lockScreen button:active{opacity:.85}
+#lockoutBtn{flex:none;padding:4px 10px;border:1px solid #BE7E5C;border-radius:14px;background:transparent;color:#BE7E5C;font-size:11px;cursor:pointer;font-family:inherit;white-space:nowrap;opacity:.8}
+#lockoutBtn:active{background:rgba(190,126,92,.12)}
+</style>
+<script>
+(function(){
+  var HASH="23ec64423e6c04a751954b0dfc6d9486add4cbf8a9daf543fd9f1a686a96be14";
+  var scr=document.getElementById("lockScreen");
+  try{if(sessionStorage.getItem("wsb_unlocked")==="1"){scr.parentNode.removeChild(scr);return;}}catch(e){}
+  document.body.style.overflow="hidden";
+  var pw=document.getElementById("lockPw"),btn=document.getElementById("lockBtn"),msg=document.getElementById("lockMsg");
+  function hex(buf){return Array.prototype.map.call(new Uint8Array(buf),function(x){return("0"+x.toString(16)).slice(-2);}).join("");}
+  function unlock(){
+    var v=pw.value;if(!v)return;
+    if(!(window.crypto&&crypto.subtle)){msg.textContent="請用 https 網址開啟";return;}
+    crypto.subtle.digest("SHA-256",new TextEncoder().encode(v)).then(function(b){
+      if(hex(b)===HASH){try{sessionStorage.setItem("wsb_unlocked","1");}catch(e){}document.body.style.overflow="";scr.parentNode.removeChild(scr);}
+      else{msg.textContent="密碼錯誤";pw.value="";pw.focus();}
+    });
+  }
+  btn.addEventListener("click",unlock);
+  pw.addEventListener("keydown",function(e){if(e.key==="Enter")unlock();});
+  setTimeout(function(){pw.focus();},120);
+})();
+(function lockoutWire(){
+  var b=document.getElementById("lockoutBtn");
+  if(b)b.addEventListener("click",function(){
+    try{sessionStorage.removeItem("wsb_unlocked");}catch(e){}
+    location.reload();
+  });
+})();
+</script>
 
 <script>
 "use strict";
@@ -213,8 +265,11 @@ function mapRows(headers,rows,titleIdx,dateIdx){
   if(!arr.length)arr=[0];
   const tset=new Set(arr);
   const di=(dateIdx>=0&&dateIdx<headers.length)?dateIdx:-1;
-  // 遇到整列含「以下不使用」即停止,後面都不抓
-  const cut=rows.findIndex(r=>r.some(c=>/以下\s*不使用/.test(cellStr(c))));
+  // 遇到分隔標記即停止:整列含「以下不使用」,或某格是短的單獨「停用/失效」標記
+  const cut=rows.findIndex(r=>r.some(c=>{
+    const s=cellStr(c).trim();
+    return /以下\s*不使用/.test(s)||((/停用|失效/.test(s))&&s.length<=8);
+  }));
   if(cut>=0)rows=rows.slice(0,cut);
   return rows.filter(r=>{
     if(!r.some(c=>cellStr(c).trim()!==""))return false;
@@ -226,8 +281,8 @@ function mapRows(headers,rows,titleIdx,dateIdx){
     const date=di>=0?toDate(r[di]):"";
     const fields=[],parts=[];
     headers.forEach((h,i)=>{if(tset.has(i)||i===di)return;if(!String(h).trim()||/^欄\d+$/.test(String(h)))return;const v=cellStr(r[i]);fields.push({k:h,v});if(v.trim()!=="")parts.push(h+"："+v);});
-    return {id:"s"+idx,title:title||"(未命名)",date,note:parts.join("\n"),fields,createdAt:Date.now()-idx,ro:true};
-  });
+    return {id:"s"+idx,title:title||"(未命名)",date,note:parts.join("\n"),fields,createdAt:Date.now()-idx,ro:true,_hasData:parts.length>0};
+  }).filter(rec=>rec._hasData); // 只有名稱、其餘全空的列(如「停用」「區段標題」)略過
 }
 function extractSheet(url){
   const m=url.match(/docs\.google\.com\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);
@@ -312,7 +367,11 @@ async function syncProject(p){
 
 /* ---------- render ---------- */
 const app=document.getElementById("app");
-function render(){view.name==="home"?renderHome():renderProject();}
+function render(){
+  const lb=document.getElementById("lockoutBtn");
+  if(lb)lb.style.display=(view.name==="home")?"":"none";
+  view.name==="home"?renderHome():renderProject();
+}
 function fmtAgo(ts){if(!ts)return"";const d=Math.floor((Date.now()-ts)/60000);if(d<1)return"剛剛";if(d<60)return d+" 分鐘前";const h=Math.floor(d/60);if(h<24)return h+" 小時前";return Math.floor(h/24)+" 天前";}
 function fmtWhen(p){
   if(isSynced(p))return p.lastSync?("同步 "+fmtAgo(p.lastSync)):"待同步";
